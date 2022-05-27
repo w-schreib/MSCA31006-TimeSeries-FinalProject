@@ -72,7 +72,7 @@ dfUS.wip <- wip_df %>% dplyr::filter((Country=="US")
 
 # Reshape data set, one column per city
 df_melt <- melt(dfUS.wip, id.vars = c("Date","City","State"))
-dfUS <- dcast(df_melt, Date ~ City)
+dfUS <- dcast(df_melt, Date ~ City + State)
 
 # Update values where `AvgTemperature` = -99 by forward filling 
 dfUS <- dfUS %>% naniar::replace_with_na_all(condition = ~.x == -99)
