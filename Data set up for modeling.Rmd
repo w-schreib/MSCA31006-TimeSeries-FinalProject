@@ -52,7 +52,6 @@ Subset US cities
 # list of US cities of interest
 CitiesOfInterest <- c("Chicago",
                       "Anchorage",
-                      "Denver",
                       "Indianapolis",
                       "Kansas City",
                       "Las Vegas",
@@ -75,8 +74,9 @@ df_melt <- melt(df.usa, id.vars = c("Date","City"))
 df.usa2 <- dcast(df_melt, Date ~ City)
 
 # update values where `AvgTemperature` = -99 by forward filling 
-df.usa2 <- df.usa2 %>% naniar::replace_with_na_all(condition = ~.x == -99)
-df.usa2 <- na.locf(na.locf(df.usa2), fromLast = FALSE)
+df.usa2 <- df.usa2 %>% 
+  naniar::replace_with_na_all(condition = ~.x == -99) %>%
+  na.locf(fromLast = FALSE)
 ```
 
 ## Univariate Time Series: Daily, Weekly, Monthly Avg Temp in Chicago
