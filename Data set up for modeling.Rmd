@@ -1,0 +1,151 @@
+---
+title: "MSCA 31006 Time Series - Final Project - ... Model"
+author: "Whitney Schreiber"
+date: '2022-05-26'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load packages
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(zoo)
+  library(xts)
+  library(tseries)
+  library(forecast)
+  library(TSA)
+  library(reshape2)
+  library(naniar)
+  library(lubridate)
+})
+```
+
+# Import and process data 
+
+```{r}
+# import data
+raw.df <- read.csv("city_temperature.csv")
+
+# remove observations with year = 200, 201 or 2020 (only partial data), Day = 0 
+wip.df <- raw.df %>% 
+  filter(!Year %in% (200:201)) %>%
+  filter(Day != 0)
+
+# date data type
+wip.df <- wip.df %>%
+  mutate(Date = as.Date(with(wip.df,paste(Year,Month,Day,sep="-")),
+                        "%Y-%m-%d")) %>%
+  select(-c("Month","Day","Year"))
+
+# number of days between the start and end date (inclusive)
+n_days <- max(wip.df$Date) - min(wip.df$Date) + 1
+```
+
+Subset US cities
+
+```{r}
+# list of US cities of interest
+CitiesOfInterest <- c("Chicago",
+                      "Anchorage",
+                      "Denver",
+                      "Indianapolis",
+                      "Kansas City",
+                      "Las Vegas",
+                      "Los Angeles",
+                      "Miami Beach",
+                      "Minneapolis St. Paul",
+                      "New York City",
+                      "Phoenix",
+                      "Raleigh Durham",
+                      "San Antonio")
+
+# subset US cities of interest 
+df.usa <- wip.df %>% dplyr::filter((Country=="US") 
+                                     & (City %in% CitiesOfInterest) 
+                                     & (State!="Additional Territories")) %>%
+  select(-c("Region", "Country", "State")) # drop redundant columns
+
+# reshape data set, one column per city
+df_melt <- melt(df.usa, id.vars = c("Date","City"))
+df.usa2 <- dcast(df_melt, Date ~ City)
+
+# update values where `AvgTemperature` = -99 by forward filling 
+df.usa2 <- df.usa2 %>% naniar::replace_with_na_all(condition = ~.x == -99)
+df.usa2 <- na.locf(na.locf(df.usa2), fromLast = FALSE)
+```
+
+## Univariate Time Series: Daily, Weekly, Monthly Avg Temp in Chicago
+
+*Create Test and Train Splits*
+
+- Train : 1995-01-01 - 2019-12-31
+- Test  : 2020-01-01 - 2020-05-13
+
+```{r}
+train.test <- function(ts, year, split){
+  if(split == 'train'){
+    ts <- window(ts, end=c(year-1,12))
+  }
+  else{
+    ts <- window(ts, start=c(year,1))
+  }
+  print(autoplot(ts, main=split))
+  return(ts)
+}
+```
+
+```{r}
+# select Chicago
+df <- df.usa2 %>% select(c("Date","Chicago")) %>% rename(AvgTemp = "Chicago")
+```
+
+```{r}
+# ts of daily avg temp
+ts.d <- df %>% select(-c("Date")) %>% ts(start=c(1995,1), frequency=365)
+train.d <- train.test(ts.d, 2020, "train")
+test.d <- train.test(ts.d, 2020, "test")
+```
+
+```{r}
+# weekly avg temp
+ts.w <- df %>%
+  # group by week, use week start date
+  group_by(WeekStart = lubridate::floor_date(df$Date,unit="week")) %>%
+  # calculate avg
+  summarize(AvgTemp = mean(AvgTemp) %>% round(2)) %>% 
+  # drop "WeekStart" date before converting to ts
+  select(-c("WeekStart")) %>%
+  # convert to time series object
+  ts(start=c(1995,1), frequency=52)
+# train split
+train.w <- train.test(ts.w, 2020, "train")
+# test split
+test.w <- train.test(ts.w, 2020, "test")
+```
+
+```{r}
+# monthly avg temp
+ts.m <- df %>%
+  # group by YearMonth
+  group_by(YearMonth = as.yearmon(Date)) %>%
+  # calculate avg
+  summarize(AvgTemp = mean(AvgTemp) %>% round(2)) %>% 
+  # drop "YearMonth" date before converting to ts
+  select(-c("YearMonth")) %>%
+  # convert to time series object
+  ts(start=c(1995,1), frequency=12)
+# train split
+train.m <- train.test(ts.m, 2020, "train")
+# test split
+test.m <- train.test(ts.m, 2020, "test")
+```
+
+# Model
+
+
+
