@@ -68,11 +68,11 @@ CitiesOfInterest <- c("Chicago",
 dfUS.wip <- wip_df %>% dplyr::filter((Country=="US") 
                                      & (City %in% CitiesOfInterest) 
                                      & (State!="Additional Territories")) %>%
-  select(-c("Region", "Country")) # drop redundant columns
+  select(-c("Region", "Country","State")) # drop redundant columns
 
 # Reshape data set, one column per city
-df_melt <- melt(dfUS.wip, id.vars = c("Date","City","State"))
-dfUS <- dcast(df_melt, Date ~ City + State)
+df_melt <- melt(dfUS.wip, id.vars = c("Date","City"))
+dfUS <- dcast(df_melt, Date ~ City)
 
 # Update values where `AvgTemperature` = -99 by forward filling 
 dfUS <- dfUS %>% naniar::replace_with_na_all(condition = ~.x == -99)
