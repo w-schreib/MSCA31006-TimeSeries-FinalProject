@@ -83,21 +83,8 @@ df.usa2 <- df.usa2 %>%
 
 *Create Test and Train Splits*
 
-- Train : 1995-01-01 - 2019-12-31
-- Test  : 2020-01-01 - 2020-05-13
-
-```{r}
-train.test <- function(ts, year, split){
-  if(split == 'train'){
-    ts <- window(ts, end=c(year-1,12))
-  }
-  else{
-    ts <- window(ts, start=c(year,1))
-  }
-  print(autoplot(ts, main=split))
-  return(ts)
-}
-```
+-   Train : 1995-01-01 - 2019-12-31
+-   Test : 2020-01-01 - 2020-05-13
 
 ```{r}
 # select Chicago
@@ -107,8 +94,12 @@ df <- df.usa2 %>% select(c("Date","Chicago")) %>% rename(AvgTemp = "Chicago")
 ```{r}
 # ts of daily avg temp
 ts.d <- df %>% select(-c("Date")) %>% ts(start=c(1995,1), frequency=365)
-train.d <- train.test(ts.d, 2020, "train")
-test.d <- train.test(ts.d, 2020, "test")
+# split test and train
+train.d <- window(ts.d, end=c(2019,365))  ;  autoplot(train.d)
+test.d <- window(ts.d, start=c(2020,1))   ;  autoplot(test.d)
+# check length
+length(ts.d) == n_days
+length(ts.d) == length(train.d) + length(test.d)
 ```
 
 ```{r}
@@ -121,11 +112,12 @@ ts.w <- df %>%
   # drop "WeekStart" date before converting to ts
   select(-c("WeekStart")) %>%
   # convert to time series object
-  ts(start=c(1995,1), frequency=52)
-# train split
-train.w <- train.test(ts.w, 2020, "train")
-# test split
-test.w <- train.test(ts.w, 2020, "test")
+  ts(start=c(1995,1), deltat=1/52)
+# split test and train
+train.w <- window(ts.w, start=c(1995,1), end=c(2019,52))  ;  autoplot(train.w)
+test.w <- window(ts.w, start=c(2020,1))  ;  autoplot(test.w)
+# check length
+length(ts.w) == length(train.w) + length(test.w)
 ```
 
 ```{r}
@@ -139,10 +131,11 @@ ts.m <- df %>%
   select(-c("YearMonth")) %>%
   # convert to time series object
   ts(start=c(1995,1), frequency=12)
-# train split
-train.m <- train.test(ts.m, 2020, "train")
-# test split
-test.m <- train.test(ts.m, 2020, "test")
+# split test and train
+train.m <- window(ts.m, end=c(2019,12))  ;  autoplot(train.m)
+test.m <- window(ts.m, start=c(2020,1))  ;  autoplot(test.m)
+# check length
+length(ts.m) == length(train.m) + length(test.m)
 ```
 
 # Model
