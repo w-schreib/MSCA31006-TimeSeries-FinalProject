@@ -16,7 +16,7 @@ suppressPackageStartupMessages(lapply(packages, require, character.only = TRUE))
 
 ```
 
-# Import and process data 
+# Import and process data
 
 ```{r}
 # import data
@@ -74,8 +74,8 @@ df.usa2 <- na.locf(na.locf(df.usa2), fromLast = FALSE)
 
 *Create Test and Train Splits*
 
-- Train : 1995-01-01 - 2019-12-31
-- Test  : 2020-01-01 - 2020-05-13
+-   Train : 1995-01-01 - 2019-12-31
+-   Test : 2020-01-01 - 2020-05-13
 
 ```{r}
 train.test <- function(ts, year, split){
@@ -94,8 +94,7 @@ train.test <- function(ts, year, split){
 df <- df.usa2 %>% select(c("Date","Chicago")) %>% rename(AvgTemp = "Chicago")
 ```
 
-### Function to generate time series of frequency specified 
-
+### Function to generate time series of frequency specified
 
 ```{r}
 generateTS <- function(freq){
@@ -118,40 +117,124 @@ generateTS <- function(freq){
 }
 ```
 
-# Model
+## Seasonal Decomposition
+
+Separate 4 main components
+
+1.  Observed
+
+2.  Trend: Long-term trends in the data
+
+3.  Seasonal: Repeated seasonal signal adder
+
+4.  Random: Remaining components that cannot be attributed to seasonality or trend
 
 ```{r}
+frequencies <- c("day","week","month")
+lapply(frequencies, function(f){
+  ts <- generateTS(f)
+  decomp <- decompose(ts) 
+  plot(decomp)
+})
+```
 
-#accepts model predictions and test dataframe 
-#idea here is we can merge the results for each frequency into one frame and change predicted vals to the model results per model 
-EvaluateModel <- function(pred, test, freq){
-  data.frame(Date = seq(from = as.Date("2020-01-01"), by = freq, length.out = length(test)),
+# Model
+EvaluateModel <- function(pred){
+  data.frame(Date = seq(from = as.Date("2020-01-01"), by = "week", length.out = length(test)),
                     Observed = as.numeric(test),
-                    Predicted=pred$mean)
+                    Predicted=pred$mean))
+```{r}
+train <- generateTS("week") %>% train.test(2020,"train")
+test <- generateTS("week") %>% train.test(2020,"test")
+
+results <-  data.frame(Date = seq(from = as.Date("2020-01-01"), by = "week", length.out = length(test)),
+                    Observed = as.numeric(test))
+
+
+EvaluateModel <- function(mod){
+  pred <- forecast(mod, h=length(test), level=c(80,95))
+  plot(pred, xlim=c(1995, 2020))
+  lines(pred$fitted, lty=2, col="purple")
+  
+  resid <- pred$residuals
+  acf(resid, lag.max=20, na.action=na.pass)
+  Box.test(resid, lag=20, type="Ljung-Box")
+  hist(resid)
+
+  pred
 }
 ```
+
+
 ## Holt Winters
 ```{r}
-HW.Mod <- function(freq){
-  train <- generateTS(freq) %>% train.test(2020,"train")
-  test <- generateTS(freq) %>% train.test(2020,"test")
-  
-  hw <- HoltWinters(train)
-  print(hw)
-  pred <- forecast(hw, h=length(test))
-  print(plot(pred))
-  EvaluateModel(pred, test, freq)
+get.HW.params <- function(mod){
+  data.frame(alpha = round(mod$alpha,5),
+        beta = round(mod$beta,5),
+        gamma = round(mod$gamma,5), row.names = mod$seasonal)
 }
-HW.fc <- lapply(c("day","week","month"),HW.Mod)
 ```
 
-df %>%
-  # group by YearMonth
-  group_by(YearMonth = as.yearmon(Date)) %>%
-  # calculate avg
-  summarize(AvgTemp = mean(AvgTemp) %>% round(2)) %>% 
-  # drop "YearMonth" date before converting to ts
-  select(-c("YearMonth")) %>%
-  # convert to time series object
-  ts(start=c(1995,1), frequency=12)
+### Additive
+```{r}
+hw.1 <- HoltWinters(train)
+hw.1.fc <- EvaluateModel(hw.1)
+results$HW.Additive <- hw.1.fc$mean
+```
+### Multiplicative
+```{r}
+hw.2 <- HoltWinters(train, seasonal = "multiplicative")
+hw.2.fc <- EvaluateModel(hw.2)
+results$HW.Multiplicative <- hw.2.fc$mean
+```
 
+### Multiplicative vs. Additive
+```{r}
+hw.params <- rbind(get.HW.params(hw.1),get.HW.params(hw.2))
+```
+
+```{r}
+plot(HW.additive$day)
+lines(HW.additive$week$fitted, lty=2, col="blue")
+lines(HW.additive$month$fitted, lty=2, col="red")
+```
+
+### Multiplicative
+
+```{r}
+HW.multiplicative <- setNames(lapply(frequencies,fit.HW,"multiplicative"),frequencies)
+lapply(HW.multiplicative,checkresiduals)
+```
+
+#### Forecast Evaluation
+
+Check there are no correlations between forecast errors
+
+```{r}
+lapply(HW.multiplicative, function(x){
+  resid <- x$residuals
+  #acf(resid, na.action = na.pass)
+  checkresiduals(x)
+})
+```
+
+```{r}
+#inputs are a list of models 
+Compare.Models <- function(mods){
+  test <- generateTS("day") %>% train.test(2020,"test")
+  df <- data.frame(Date = seq(from = as.Date("2020-01-01"), by = "day", length.out = length(test)),
+                    Observed = as.numeric(test))
+  df$Daily.Forecast <- na.locf(mods$day$mean)
+  df$Weekly.Forecast <- na.locf(mods$week$mean)
+  df$Monthly.Forecast <- na.approx(mods$month$mean)
+  df
+  #sapply(names(mods), function(x){
+    #df$x <- na.locf(mods[[x]]$mean)
+  #})
+}
+Compare.Models(HW.additive)
+```
+
+EvaluateModel \<- function(pred,freq){ test \<- generateTS(freq) %\>% train.test(2020,"test") data.frame(Date = seq(from = as.Date("2020-01-01"), by = freq, length.out = length(test)), Observed = as.numeric(test), Predicted=pred\$mean) }
+
+A method that often provides accurate and robust forecasts for seasonal data is the Holt-Winters method with a damped trend and multiplicative seasonality
