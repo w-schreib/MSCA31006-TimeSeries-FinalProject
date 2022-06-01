@@ -138,6 +138,23 @@ test.m <- window(ts.m, start=c(2020,1))  ;  autoplot(test.m)
 # check length
 length(ts.m) == length(train.m) + length(test.m)
 ```
+#STL Decomposition
+
+```{r}
+STL_D = stl(train.d[,1],s.window = "periodic")
+
+plot(STL_D, main="Daily Decomposition")
+
+STL_W = stl(train.w[,1],s.window = "periodic")
+
+plot(STL_W, main="Weekly Decomposition")
+
+STL_M = stl(train.m[,1],s.window = "periodic")
+
+plot(STL_M, main="Monthly Decomposition")
+```
+
+
 
 # Model
 
@@ -179,8 +196,6 @@ acf(residuals(fcst_sd_w),main="ACF of STL Residuals")
 
 STL_SD_W_train = stl(train.w[,1],s.window = "periodic")
 
-STL_SD_W_test = stl(tstrain.sd.w,s.window="periodic")
-
 plot(STL_SD_W_train, main="STL Train Decomposition")
 
 fcst_sd_w_train = forecast(STL_SD_W_train,h=length(test.w))
@@ -194,8 +209,8 @@ acc_train = forecast::accuracy(fcst_sd_w_train,test.w)
 acc_train
 
 #SMAPE
-smape_train = smape(tstrain.sd.w,fcst_sd_w_train$residuals)
-smape_test = smape(tstest.sd.w,fcst_sd_w_train$mean)
+smape_train = smape(train.w,fcst_sd_w_train$residuals)
+smape_test = smape(test.w,fcst_sd_w_train$mean)
 
 #Residuals
 checkresiduals(fcst_sd_w_train)
@@ -210,4 +225,69 @@ acf(residuals(fcst_sd_w_train),main="ACF of STL Train Residuals")
 
 
 
+```{r}
+
+#STL on train dataset V1
+
+STL_SD_W_train_v1 = stl(train.w[,1],s.window = 10,t.window=13)
+
+
+plot(STL_SD_W_train_v1, main="STL Train Decomposition")
+
+fcst_sd_w_train_v1 = forecast(STL_SD_W_train_v1,h=length(test.w))
+
+plot(fcst_sd_w_train_v1,main="Forecasts from STL and ARIMA")
+
+#Check Accuracy
+
+acc_train_v1 = forecast::accuracy(fcst_sd_w_train_v1,test.w)
+
+acc_train
+
+#SMAPE
+smape_train_v1 = smape(train.w,fcst_sd_w_train_v1$residuals)
+smape_test_v1 = smape(test.w,fcst_sd_w_train_v1$mean)
+
+#Residuals
+checkresiduals(fcst_sd_w_train_v1)
+
+#Ljung Box Test
+Box.test(fcst_sd_w_train_v1,type="Ljung-Box")
+
+ts.plot(residuals(fcst_sd_w_train_v1),ylab="Residuals",xlab="",main="Residuals from STL Train Model")
+
+acf(residuals(fcst_sd_w_train_v1),main="ACF of STL Train Residuals")
+```
+```{r}
+#MSTL on train dataset
+
+STL_SD_W_train_v2 = mstl(train.w[,1],s.window = 13)
+
+
+plot(STL_SD_W_train_v2, main="STL Train Decomposition")
+
+fcst_sd_w_train_v2 = forecast(STL_SD_W_train_v2,h=length(test.w))
+
+plot(fcst_sd_w_train_v2,main="Forecasts from STL and ARIMA")
+
+#Check Accuracy
+
+acc_train_v2= forecast::accuracy(fcst_sd_w_train_v2,test.w)
+
+acc_train
+
+#SMAPE
+smape_train_v2 = smape(train.w,fcst_sd_w_train_v2$residuals)
+smape_test_v2 = smape(test.w,fcst_sd_w_train_v2$mean)
+
+#Residuals
+checkresiduals(fcst_sd_w_train_v2)
+
+#Ljung Box Test
+Box.test(fcst_sd_w_train_v2,type="Ljung-Box")
+
+ts.plot(residuals(fcst_sd_w_train_v2),ylab="Residuals",xlab="",main="Residuals from STL Train Model")
+
+acf(residuals(fcst_sd_w_train_v2),main="ACF of STL Train Residuals")
+```
 
