@@ -1,0 +1,405 @@
+---
+title: "MSCA 31006 Time Series - Final Project - ARIMA Model (WIP)"
+author: "Whitney Schreiber"
+date: '2022-05-26'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load packages
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(zoo)
+  library(xts)
+  library(tseries)
+  library(forecast)
+  library(TSA)
+  library(reshape2)
+  library(naniar)
+  library(lubridate)
+  library(Metrics)
+})
+```
+
+# Import and process data
+
+```{r}
+# import data
+raw.df <- read.csv("city_temperature.csv")
+
+# remove observations with year = 200, 201 or 2020 (only partial data), Day = 0 
+wip.df <- raw.df %>% 
+  filter(!Year %in% (200:201)) %>%
+  filter(Day != 0)
+
+# date data type
+wip.df <- wip.df %>%
+  mutate(Date = as.Date(with(wip.df,paste(Year,Month,Day,sep="-")),
+                        "%Y-%m-%d")) %>%
+  select(-c("Month","Day","Year"))
+
+# number of days between the start and end date (inclusive)
+n_days <- max(wip.df$Date) - min(wip.df$Date) + 1
+```
+
+Subset US cities
+
+```{r}
+# list of US cities of interest
+CitiesOfInterest <- c("Chicago",
+                      "Lincoln",
+                      "Eugene",
+                      "Kansas City",
+                      "Las Vegas",
+                      "Los Angeles",
+                      "Minneapolis St. Paul",
+                      "Phoenix",
+                      "San Antonio",
+                      "Salt Lake City",
+                      "Cheyenne",
+                      "Tulsa",
+                      "Albuquerque",
+                      "Colorado Springs")
+
+# subset US cities of interest 
+df.usa <- wip.df %>% dplyr::filter((Country=="US") 
+                                    & (City %in% CitiesOfInterest) 
+                                    & (State!="Additional Territories")) %>%
+  select(-c("Region", "Country", "State")) # drop redundant columns
+
+# reshape data set, one column per city
+df_melt <- melt(df.usa, id.vars = c("Date","City"))
+df.usa2 <- dcast(df_melt, Date ~ City)
+
+# update values where `AvgTemperature` = -99 by forward filling 
+df.usa2 <- df.usa2 %>% 
+  naniar::replace_with_na_all(condition = ~.x == -99) %>%
+  na.locf(fromLast = FALSE)
+nrow(df.usa2) == n_days
+```
+
+## Univariate Time Series: Daily, Weekly, Monthly Avg Temp in Chicago
+
+*Create Test and Train Splits*
+
+-   Train : 1995-01-01 - 2019-12-31
+-   Test : 2020-01-01 - 2020-05-13
+
+```{r}
+# select Chicago
+df <- df.usa2 %>% select(c("Date","Chicago")) %>% rename(AvgTemp = "Chicago")
+```
+
+```{r}
+# ts of daily avg temp
+ts.d <- df %>% select(-c("Date")) %>% ts(start=c(1995,1), frequency=365)
+# split test and train
+train.d <- window(ts.d, end=c(2019,365))  #;  autoplot(train.d)
+test.d <- window(ts.d, start=c(2020,1))   #;  autoplot(test.d)
+# check length
+length(ts.d) == n_days
+length(ts.d) == length(train.d) + length(test.d)
+```
+
+```{r}
+# weekly avg temp
+ts.w <- df %>%
+  # group by week, use week start date
+  group_by(WeekStart = lubridate::floor_date(df$Date,unit="week")) %>%
+  # calculate avg
+  summarize(AvgTemp = mean(AvgTemp) %>% round(2)) %>% 
+  # drop "WeekStart" date before converting to ts
+  select(-c("WeekStart")) %>%
+  # convert to time series object
+  ts(start=c(1995,1), deltat=1/52)
+# split test and train
+train.w <- window(ts.w, start=c(1995,1), end=c(2019,52))  #;  autoplot(train.w)
+test.w <- window(ts.w, start=c(2020,1))  #;  autoplot(test.w)
+# check length
+length(ts.w) == length(train.w) + length(test.w)
+```
+
+```{r}
+# monthly avg temp
+ts.m <- df %>%
+  # group by YearMonth
+  group_by(YearMonth = as.yearmon(Date)) %>%
+  # calculate avg
+  summarize(AvgTemp = mean(AvgTemp) %>% round(2)) %>% 
+  # drop "YearMonth" date before converting to ts
+  select(-c("YearMonth")) %>%
+  # convert to time series object
+  ts(start=c(1995,1), frequency=12)
+# split test and train
+train.m <- window(ts.m, end=c(2019,12))  #;  autoplot(train.m)
+test.m <- window(ts.m, start=c(2020,1))  #;  autoplot(test.m)
+# check length
+length(ts.m) == length(train.m) + length(test.m)
+```
+
+
+
+# ARIMA Model
+
+## Modeling Daily Avg Temp (Univariate ts)
+
+```{r}
+# Create model
+(d.arima <- auto.arima(train.d))
+# Forecast
+d.forecast <- forecast(d.arima, h=length(test.d))
+forecast::autoplot(d.forecast)
+# Accuracy
+forecast::accuracy(d.forecast, test.d) %>% round(3)
+# Check residuals
+forecast::checkresiduals(d.arima)
+```
+
+
+## Modeling Weekly Avg Temp (Univariate ts)
+
+```{r}
+# create model
+(w.arima <- auto.arima(train.w))
+# Forecast
+w.forecast <- forecast(w.arima, h=length(test.w))
+forecast::autoplot(w.forecast)
+# Accuracy
+forecast::accuracy(w.forecast, test.w) %>% round(3)
+smape(train.w, fitted(w.arima))
+smape(test.w, w.forecast$mean)
+# Check residuals
+forecast::checkresiduals(w.arima)
+par(mfrow=c(2,1), cex.axis=0.75, cex.lab=0.75)
+ts.plot(residuals(w.arima),
+        ylab="Residuals",xlab="",
+        main="Residuals from ARIMA Model")
+acf(residuals(w.arima), main="ACF of ARIMA Residuals")
+```
+
+The residuals plot does not appear to be white noise, the residuals exhibit a repeating pattern.
+
+ACF of residuals show significant spikes at lag 52 (i.e. 1 year) and 104 (i.e. 2 years).
+
+Ljune-Box test for autocorrelation: reject the null hypothesis and conclude that the residuals are not independent (residuals have autocorrelation).
+
+
+### Test additional ARIMA models
+
+```{r}
+# Arima(train.w,
+#       order = c(3,0,0),
+#       seasonal = list(order=c(1,1,0), period=52))
+# Arima(train.w,
+#       order = c(3,0,1),
+#       seasonal = list(order=c(1,1,0), period=52))
+# Arima(train.w,
+#       order = c(0,0,1),
+#       seasonal = list(order=c(1,1,0), period=52))
+```
+
+
+### Regression with ARIMA Errors (weekly ts)
+
+```{r}
+cor(df.usa2$Chicago, df.usa2 %>% select(-c("Date","Chicago")))
+```
+
+Select predictors and create ts object (manually lag predictors 1 week)
+
+```{r}
+ts.Xw <- df.usa2 %>% 
+  select(c("Date", 
+           "Colorado Springs")) %>%
+  group_by(WeekStart = lubridate::floor_date(df$Date,unit="week")) %>%
+  summarize_all(mean) %>% select(-c("WeekStart")) %>%
+  ts(start=c(1995,2),deltat=1/52) # convert to ts, manually lagged
+# split test and train
+train.Xw <- window(ts.Xw, start=c(1995,2), end=c(2019,52))
+test.Xw <- window(ts.Xw, start=c(2020,1))
+
+# Create model
+wX.arima <- auto.arima(window(train.w,start=c(1995,2)), xreg = train.Xw)
+wX.arima
+# Forecast
+wX.forecast <- forecast(wX.arima, xreg=test.Xw, h=length(test.w))
+forecast::autoplot(wX.forecast)
+# Accuracy
+forecast::accuracy(wX.forecast, test.w) %>% round(3)
+smape(test.w, wX.forecast$mean)
+# Check residuals
+forecast::checkresiduals(wX.arima)
+```
+
+```{r}
+ts.Xw <- df.usa2 %>% 
+  select(c("Date", "Salt Lake City")) %>% 
+  group_by(WeekStart = lubridate::floor_date(df$Date,unit="week")) %>%
+  summarize_all(mean) %>% select(-c("WeekStart")) %>%
+  ts(start=c(1995,2),deltat=1/52) # convert to ts, manually lagged
+# split test and train
+train.Xw <- window(ts.Xw, start=c(1995,2), end=c(2019,52))
+test.Xw <- window(ts.Xw, start=c(2020,1))
+
+# Create model
+wX.arima <- auto.arima(window(train.w,start=c(1995,2)), xreg = train.Xw)
+wX.arima
+# Forecast
+wX.forecast <- forecast(wX.arima, xreg=test.Xw, h=length(test.w))
+forecast::autoplot(wX.forecast)
+# Accuracy
+forecast::accuracy(wX.forecast, test.w) %>% round(3)
+smape(test.w, wX.forecast$mean)
+# Check residuals
+forecast::checkresiduals(wX.arima)
+```
+
+
+```{r}
+ts.Xw <- df.usa2 %>% 
+  select(c("Date", "Phoenix")) %>% 
+  group_by(WeekStart = lubridate::floor_date(df$Date,unit="week")) %>%
+  summarize_all(mean) %>% select(-c("WeekStart")) %>%
+  ts(start=c(1995,2),deltat=1/52) # convert to ts, manually lagged
+# split test and train
+train.Xw <- window(ts.Xw, start=c(1995,2), end=c(2019,52))
+test.Xw <- window(ts.Xw, start=c(2020,1))
+
+# Create model
+wX.arima <- auto.arima(window(train.w,start=c(1995,2)), xreg = train.Xw)
+wX.arima
+# Forecast
+wX.forecast <- forecast(wX.arima, xreg=test.Xw, h=length(test.w))
+forecast::autoplot(wX.forecast)
+# Accuracy
+forecast::accuracy(wX.forecast, test.w) %>% round(3)
+smape(test.w, wX.forecast$mean)
+# Check residuals
+forecast::checkresiduals(wX.arima)
+```
+
+```{r}
+ts.Xw <- df.usa2 %>% 
+  select(c("Date", "Albuquerque")) %>% 
+  group_by(WeekStart = lubridate::floor_date(df$Date,unit="week")) %>%
+  summarize_all(mean) %>% select(-c("WeekStart")) %>%
+  ts(start=c(1995,2),deltat=1/52) # convert to ts, manually lagged
+# split test and train
+train.Xw <- window(ts.Xw, start=c(1995,2), end=c(2019,52))
+test.Xw <- window(ts.Xw, start=c(2020,1))
+
+# Create model
+wX.arima <- auto.arima(window(train.w,start=c(1995,2)), xreg = train.Xw)
+wX.arima
+# Forecast
+wX.forecast <- forecast(wX.arima, xreg=test.Xw, h=length(test.w))
+forecast::autoplot(wX.forecast)
+# Accuracy
+forecast::accuracy(wX.forecast, test.w) %>% round(3)
+smape(test.w, wX.forecast$mean)
+# Check residuals
+forecast::checkresiduals(wX.arima)
+```
+
+```{r}
+ts.Xw <- df.usa2 %>% 
+  select(c("Date", "Los Angeles")) %>% 
+  group_by(WeekStart = lubridate::floor_date(df$Date,unit="week")) %>%
+  summarize_all(mean) %>% select(-c("WeekStart")) %>%
+  ts(start=c(1995,2),deltat=1/52) # convert to ts, manually lagged
+# split test and train
+train.Xw <- window(ts.Xw, start=c(1995,2), end=c(2019,52))
+test.Xw <- window(ts.Xw, start=c(2020,1))
+
+# Create model
+wX.arima <- auto.arima(window(train.w,start=c(1995,2)), xreg = train.Xw)
+wX.arima
+# Forecast
+wX.forecast <- forecast(wX.arima, xreg=test.Xw, h=length(test.w))
+forecast::autoplot(wX.forecast)
+# Accuracy
+forecast::accuracy(wX.forecast, test.w) %>% round(3)
+smape(test.w, wX.forecast$mean)
+# Check residuals
+forecast::checkresiduals(wX.arima)
+```
+
+#### Regression with ARIMA Errors: Final Model (based on lowest test MAPE)
+
+```{r}
+ts.Xw <- df.usa2 %>% 
+  select(c("Date", 
+           "Los Angeles",
+           "Salt Lake City")) %>% 
+  group_by(WeekStart = lubridate::floor_date(df$Date,unit="week")) %>%
+  summarize_all(mean) %>% select(-c("WeekStart")) %>%
+  ts(start=c(1995,2),deltat=1/52) # convert to ts, manually lagged
+# split test and train
+train.Xw <- window(ts.Xw, start=c(1995,2), end=c(2019,52))
+test.Xw <- window(ts.Xw, start=c(2020,1))
+
+# Create model
+wX.arima <- auto.arima(window(train.w,start=c(1995,2)), xreg = train.Xw)
+wX.arima
+# Forecast
+wX.forecast <- forecast(wX.arima, xreg=test.Xw, h=length(test.w))
+forecast::autoplot(wX.forecast)
+# Accuracy
+forecast::accuracy(wX.forecast, test.w) %>% round(3)
+smape(train.w, fitted(wX.arima))
+smape(test.w, wX.forecast$mean)
+# Check residuals
+forecast::checkresiduals(wX.arima)
+# plot residuals
+par(mfrow=c(2,1), cex.axis=0.75, cex.lab=0.75)
+ts.plot(residuals(wX.arima),
+        ylab="Residuals",xlab="",
+        main="Residuals from Regression with ARIMA Errors")
+acf(residuals(w.arima), main="ACF of Dynamic Regression Residuals")
+```
+
+
+
+# Modeling Monthly Avg Temp (Univariate ts)
+
+```{r}
+# Create model
+(m.arima <- auto.arima(train.m))
+# Forecast
+m.forecast <- forecast(m.arima, h=length(test.m))
+forecast::autoplot(m.forecast)
+# Accuracy
+forecast::accuracy(m.forecast, test.m)
+# Check residuals
+forecast::checkresiduals(m.arima)
+```
+
+Ljune-Box test >> reject the null hypothesis and conclude that the residuals are not independent (residuals have autocorrelation).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
