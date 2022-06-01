@@ -1,0 +1,808 @@
+---
+title: "MSCA 31006 Time Series - Final Project - EDA"
+author: "Whitney Schreiber, Anna Auersperg"
+date: '2022-05-08'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load packages
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(zoo)
+  library(xts)
+  library(tseries)
+  library(forecast)
+  library(TSA)
+  library(reshape2)
+  library(naniar)
+  library(lubridate)
+})
+```
+
+# Daily Average Temperature of Major Cities
+
+Daily temperature of major cities data downloaded from:
+https://www.kaggle.com/datasets/sudalairajkumar/daily-temperature-of-major-cities?resource=download
+
+Data set includes the daily average temperature between 1995-2020 for 
+321 different cities in 125 different countries in 7 different regions
+
+Variables:
+
+- `Region`
+- `Country`
+- `State` (note: corresponds to US/US territories, blank otherwise)
+- `City`
+- `Month`
+- `Day`
+- `Year`
+- `AvgTemperature`
+
+```{r}
+# import data
+raw_df <- read.csv("city_temperature.csv")
+str(raw_df)
+head(raw_df)
+```
+
+# Cities around the world 
+
+```{r}
+# unique values
+lapply(raw_df %>% dplyr::select(-c("AvgTemperature")),unique)
+# length of unique values
+lapply(
+  lapply(raw_df %>% dplyr::select(-c("AvgTemperature")),unique), 
+  length)
+```
+
+Explore unusual `Day` and `Year` values
+
+- `Day` 0
+- `Year` 200
+- `Year` 201
+
+```{r}
+# raw_df[which(raw_df$Day==0 | raw_df$Year==200 | raw_df$Year==201),]
+raw_df[which(raw_df$Day==0 | raw_df$Year==200 | raw_df$Year==201),"Country"] %>% 
+  unique()
+```
+
+```{r}
+# remove observations with year = 200, 201 or 2020 (only partial data), Day = 0 
+raw_df <- raw_df %>% 
+  filter(!Year %in% (200:201)) %>%
+  #filter(Year < 2020) %>%
+  filter(Day != 0)
+```
+
+The data set does not contain any unusual day/year values for America, 
+so these unusual instances will be removed and no further investigation is needed.
+
+### Univariate distribution (by country)
+
+```{r}
+# density plot
+raw_df %>% 
+  filter(AvgTemperature>0) %>%
+  ggplot(aes(AvgTemperature)) +
+  geom_density(aes(fill=Region), alpha=1/4) +
+  ggtitle("Density of Avg Daily Temp by Region")
+# violin plot
+raw_df %>%
+  filter(AvgTemperature>0) %>%
+  ggplot(aes(Region,AvgTemperature)) +
+  geom_violin(aes(fill=Region), alpha=1/4) + 
+  coord_flip() +
+  ggtitle("Density of Avg Daily Temp by Region")
+```
+
+### Avg Temperature per Year
+
+```{r}
+raw_df %>% filter(., !is.na(AvgTemperature)) %>%
+  group_by(Region,Year,.groups='keep') %>%
+  summarise(Temp = mean(AvgTemperature)) %>%
+  ggplot(aes(x = Year, y = Temp,color=Region)) + 
+  geom_line() +
+  ggtitle("Average Yearly Temperature by Region")
+```
+
+### Cities with Highest Avg Temp
+
+```{r}
+hot_cities <- raw_df %>%
+  filter(., !is.na(AvgTemperature)) %>%
+  group_by(City) %>%
+  summarise(avg_temp = mean(AvgTemperature, na.rm = TRUE)) %>%
+  ungroup() %>%
+  top_n(n = 10, wt = avg_temp) %>% arrange(-avg_temp)
+hot_cities
+```
+
+
+
+# Cities in the US
+
+```{r}
+# filter for 'US', excluding 'US territories' 
+df.usa <- raw_df %>% dplyr::filter((Country=="US") & 
+                                   (State!="Additional Territories"))
+# drop redundant columns
+df.usa <- df.usa %>% select(-c("Region", "Country"))
+# check for null values
+df.usa[is.na(df.usa)]
+```
+
+Create `Date` field
+
+```{r}
+df.usa <- df.usa %>%
+  mutate(Date = as.Date(with(df.usa,paste(Year,Month,Day,sep="-")),
+                        "%Y-%m-%d")) %>%
+  select(-c("Month","Day","Year"))
+head(df.usa)
+# number of days between the start and end date (inclusive)
+n_days <- max(df.usa$Date)-min(df.usa$Date)+1
+# confirm all (unique) dates are included
+df.usa$Date %>% unique() %>% length() == n_days
+# print date range and n_days
+cbind("start date"=min(df.usa$Date),
+      "end date"=max(df.usa$Date),
+      "number of days"=n_days)
+```
+
+### Check dates and cities
+
+ 1) all dates included for all cities
+ 2) no repeated dates in cities
+
+```{r}
+# number of records per day in the US
+dateCountUS <- df.usa %>% dplyr::count(Date)
+# unique values
+dateCountUS$n %>% unique() %>% sort()
+```
+
+Each date does not include a record for every city in the US. 
+Determine which cities are missing days.
+
+```{r}
+# number of records in each city
+cityCountUS <- df.usa %>% dplyr::count(City)
+# cities with incomplete date range dates 
+(incompleteCityUS <- cityCountUS %>% dplyr::filter(cityCountUS$n != n_days))
+```
+
+Washington DC, Maryland and Washington, District of Columbia appear to have 
+twice the number of records as days. Remove exact duplicates. 
+Check whether the data for "Washington DC, Maryland" and 
+"Washington, District of Columbia" are the same.
+
+```{r}
+# Remove duplicate values
+df.usa <- df.usa %>% distinct()
+```
+
+```{r}
+all(df.usa[which(df.usa$City=="Washington DC, Maryland"),"AvgTemperature"] ==
+    df.usa[which(df.usa$City=="Washington, District of Columbia"),"AvgTemperature"])
+```
+
+Remove records for Washington DC, Maryland
+
+```{r}
+df.usa <- df.usa %>% dplyr::filter(City!="Washington DC, Maryland")
+df.usa %>% 
+  dplyr::filter(City=="Washington, District of Columbia") %>% 
+  dplyr::count(City)
+```
+The new count of records for Washington, District of Columbia is correct.
+
+
+Check the ***new*** number of records in each city.
+
+```{r}
+cityCountUS <- df.usa %>% dplyr::count(City)
+(incompleteCityUS <- cityCountUS %>% dplyr::filter(cityCountUS$n != n_days))
+```
+
+Remove the 8 remaining US cities that have an incorrect number of records 
+(our analysis will focus on a city with complete records). 
+
+- Most of these cities are missing a substantial number of days (nearly 50%).
+- Abilene, Texas has an additional record that is not an exact duplicate
+
+```{r}
+# remove cities with incomplete data
+df.usa <- df.usa %>% dplyr::filter(!(City %in% incompleteCityUS$City))
+```
+
+Confirm that the number of records per day matches the number of cities
+
+```{r}
+# re-check number of records per day in the US
+dateCountUS <- df.usa %>% dplyr::count(Date)
+dateCountUS$n %>% unique() == df.usa$City %>% unique() %>% length()
+```
+
+```{r}
+# confirm that the number of days in the data set has not changed 
+df.usa$Date %>% unique() %>% length() == n_days
+```
+
+## Summary statistics of `AvgTemperature` in US
+
+```{r}
+summary(df.usa$AvgTemperature)
+```
+
+The minimum average temperature is -99, this is a placeholder for missing data.
+
+```{r}
+# number of records with AvgTemperature "-99" by date
+dailycount99 <- df.usa[which(df.usa$AvgTemperature==-99),] %>% 
+  dplyr::count(Date)
+# left join the complete dates and the "-99" counts
+dfdailycount99 <- df.usa %>% select(Date) %>% 
+  left_join(dailycount99, by="Date")
+# replace na with 0
+dfdailycount99[is.na(dfdailycount99)] <- 0
+# plot the number of "-99" records with a "-99" AvgTemperature each day
+plot(dfdailycount99, type="l", 
+     main="Number of Records per Day with Incorrect (missing) Avg Temperature")
+```
+
+Number of records missing ("-99") `AvgTemperature` in each city
+
+```{r}
+cityCount99 <- df.usa[which(df.usa$AvgTemperature==-99),] %>% 
+  dplyr::count(City)
+# calculate pct missing
+cityCount99$nPct <- cityCount99$n / as.numeric(n_days)
+summary(cityCount99)
+```
+
+Overall, the number of records with missing ("-99") `AvgTemperature` in each city is small.
+
+#### Update values where `AvgTemperature` = -99 by forward filling 
+
+*Note, data frame is sorted by City and then Date and no city starts with -99, so we can use forward filling without grouping*
+```{r}
+df.usa %>% dplyr::filter((Date==as.Date("1995-02-07")) & (AvgTemperature==-99))
+df.usa <- df.usa %>% mutate(AvgTemperature = na_if(AvgTemperature, -99)) %>% 
+  mutate(., AvgTemperature = na.locf(AvgTemperature, fromLast = FALSE))
+```
+
+# Data exploration of average temperature across the US
+
+```{r}
+meanUS <- df.usa %>%
+  group_by(Year_Month = as.yearmon(Date)) %>% 
+  summarise(AvgTemp = round(mean(AvgTemperature), 2))
+```
+
+## Change in extreme temps
+
+clear seasonality 
+
+```{r}
+extreme <- df.usa %>% group_by(Year_Month = as.yearmon(Date)) %>%
+  summarise(AvgTemp = round(mean(AvgTemperature), 2), 
+            Max = max(AvgTemperature), 
+            Min = min(AvgTemperature))
+# plot
+ggplot(extreme) +
+  geom_line(aes(x = Year_Month, y = Min), col = "Blue") + 
+  geom_point(aes(x = Year_Month, y = Min), col = "Blue") + 
+  geom_line(aes(x = Year_Month, y = Max), col = "Red") +
+  geom_point(aes(x = Year_Month, y = Max), col = "Red") +
+  labs(x ="Date", y = "Min Max") + 
+  ggtitle("Extreme High and Low Daily Avg Temp by Month, Across US")
+```
+
+```{r}
+extreme.mnthly <- function(m){
+  minimax <- extreme %>% filter(month(Year_Month) == m)
+  ggplot(data = minimax) + 
+    geom_line(aes(x = year(Year_Month), y = Min), col = "Blue") +
+    geom_point(aes(x = year(Year_Month), y = Min), col = "Blue") +
+    geom_smooth(aes(x = year(Year_Month), y = Min), col = "Blue") + 
+    geom_line(aes(x = year(Year_Month), y = Max), col = 2) +
+    geom_point(aes(x = year(Year_Month), y = Max), col = 2) +
+    geom_smooth(aes(x = year(Year_Month), y = Max), col = 2) +
+    scale_x_continuous(breaks = seq(1995, 2019, by = 1)) +
+    labs(title = paste("Minima and Maxima of ",month.abb[m]), x = "Year", y = "Min (blue)  Max (red)")  + 
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+}
+lapply(unique(month(meanUS$Year_Month)),extreme.mnthly)
+```
+
+## Average temperature across the continental US
+
+### Daily
+
+The data set represents the Avg Daily Temperature from 1995-2019, 
+which is stationary based on both the qualitative and quantitative analysis below.
+
+ADF >> reject null that time series is not stationary 
+KPSS >> p-value > 0.05 ~ cannot reject null that TS is stationary 
+
+```{r}
+#chi <- df.usa %>% filter(City == 'Chicago, Illinois')
+df.usa %>% group_by(Date) %>%
+  summarise(Avg = mean(AvgTemperature)) %>%
+  ggplot(aes(Date, Avg)) +
+  geom_line() +
+  labs(title = 'US Avg. Daily Temp', y = "Avg Temperature (F)", x = "Date")  
+adf.test(df.usa$AvgTemperature)
+kpss.test(df.usa$AvgTemperature)
+```
+
+### Monthly
+
+Define function to plot the variation in average temperature of a month (year over year)
+
+```{r}
+month.delta <- function(m){
+  # subset by month
+  mnthly.mean <- meanUS %>% filter(month(Year_Month) == m)
+  # calculate the change in average temp from the FIRST month
+  delta <- round(mnthly.mean$AvgTemp - mnthly.mean$AvgTemp[1],2)
+  # plot
+  ggplot(data = mnthly.mean) +
+    geom_point(aes(x = year(Year_Month), y = delta))  +
+    geom_line(aes(x = year(Year_Month), y = delta)) + 
+    geom_smooth(aes(x = year(Year_Month), y = delta)) + 
+    scale_x_continuous(breaks = seq(1995, 2020, by = 1)) + 
+    scale_y_continuous(breaks = seq(-6, 6, by = 0.5)) +
+    geom_line(aes(x = year(Year_Month), y = delta[1]), colour = "red", linetype = "dashed", size = 0.8) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) + 
+    labs(title = paste("Variation during the month of", month.abb[m]), 
+      y = expression(paste(Delta)), 
+      x = "Years")
+}
+lapply(unique(month(meanUS$Year_Month)),month.delta)
+```
+
+### Yearly (1995 - 2019)
+
+```{r}
+df.usa %>% dplyr::filter(Date < as.Date("2020-01-01")) %>%
+  group_by(Year = lubridate::year(Date)) %>% 
+  summarise(
+    avg_year = mean(AvgTemperature)
+  ) %>% 
+  ggplot(aes(Year, avg_year)) +
+  geom_line() +
+  geom_smooth(method = 'lm', se = F) +
+  labs(y="Avg Temp per Year") +
+  ggtitle("Yearly Average Temperature in US")
+```
+
+Chart above illustrates a global increase in temperature overtime, however, 
+there is significant variation between regions. 
+
+## Identify regions by use state datasets from R
+
+```{r}
+suppressPackageStartupMessages(library(datasets))
+regions <- data.frame(State = state.name, Region = state.region)
+df.usa <- left_join(df.usa, regions, by = "State")
+```
+
+```{r}
+sapply(split(df.usa$AvgTemperature, df.usa$Region), summary)
+```
+
+```{r}
+df.usa %>% 
+  group_by(Year=lubridate::year(Date), Region) %>% 
+  summarise(
+    avg_year = mean(AvgTemperature),
+    .groups = 'keep'  # need to use when grouping by more than 1 variable
+    ) %>% #ungroup() %>% 
+  ggplot() +
+  geom_line(aes(Year, avg_year, color = Region)) +
+  # facet_wrap(vars(Region)) + 
+  labs(y="Avg Temp per Year and Region") +
+  ggtitle("Yearly Average Temperature in US Regions")
+options(repr.plot.width = 20, repr.plot.height = 20)
+```
+
+### Top 10 cities with extreme variation in temperature
+
+Comparing the min and max temperature from 1995-2019
+
+```{r}
+df.usa %>% 
+  group_by(Year=lubridate::year(Date), City) %>% 
+  summarise(
+    avg_year = mean(AvgTemperature),
+    .groups = 'keep'  # need to use when grouping by more than 1 variable
+    ) %>% 
+  group_by(City) %>% 
+  summarise(
+    n = n(),
+    diff = max(avg_year) - min(avg_year)
+  ) %>% 
+  arrange(desc(diff)) %>% 
+  head(10) %>% 
+  ggplot() +
+  geom_col(aes(City, diff, fill = diff)) +
+  scale_fill_gradient(low = 'orange', high = 'red') +
+  labs(title = 'Top 10 cities with highest increase in annual temperature') + 
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+### Least Extreme Variation in Temp
+
+```{r}
+df.usa %>% 
+  group_by(Year=lubridate::year(Date), City) %>% 
+  summarise(
+    avg_year = mean(AvgTemperature), .groups = 'keep'
+  ) %>% 
+  group_by(City) %>% 
+  summarise(
+    n = n(),
+    diff = max(avg_year) - min(avg_year)
+  ) %>% 
+  arrange(diff) %>% 
+  head(10) %>% 
+  ggplot() +
+  geom_col(aes(City, diff, fill = diff)) +
+  labs(title = 'Top 10 cities with smallest increase in annual temperature' ) + 
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+### US Temperature by Season
+
+```{r}
+df.usa %>%
+  mutate(Month = lubridate::month(Date),
+         Season = ifelse(Month %in% c(12,1:2),"Winter",
+                         ifelse(between(Month,3,5),"Spring",
+                                ifelse(between(Month,6,8),"Summer","Fall")))) %>%
+  group_by(Season, Year=lubridate::year(Date), .groups = 'keep')  %>% 
+  summarise(AvgTemp = mean(AvgTemperature)) %>%  
+  ggplot(aes(Year, AvgTemp, color = Season)) +
+  geom_line() + 
+  geom_smooth(method = 'lm', se = F) +
+  labs(title = 'Temp Variation by Season', y="Temperature (F)", x="Year")
+```
+
+
+# Feature Engineering 
+
+## Reshape data set, one column per city
+
+```{r}
+# subset of US cities of interest
+CitiesOfInterest <- c("Chicago",
+                      "Anchorage",
+                      "Indianapolis",
+                      "Kansas City",
+                      "Las Vegas",
+                      "Los Angeles",
+                      "Miami Beach",
+                      "Minneapolis St. Paul",
+                      "New York City",
+                      "Phoenix",
+                      "Raleigh Durham",
+                      "San Antonio")
+# subset US cities of interest 
+df.usa2 <- df.usa %>% dplyr::filter(City %in% CitiesOfInterest) %>% 
+  select(-c("Region","State"))
+# Reshape data set, one column per city
+usa.melt <- melt(df.usa2, id.vars = c("Date","City"))
+df <- dcast(usa.melt, Date ~ City)
+head(df)
+```
+
+
+## Create univariate time series object
+
+Create function to filter a given city and convert the results to a 
+monthly time series to forecast the next 12 months 
+
+```{r}
+create.ts <- function(city){
+  mnthly <- df.usa %>% filter(City == city) %>%
+    group_by(Year=lubridate::year(Date), 
+             Month=lubridate::month(Date)) %>% 
+    summarise(AvgTemp = round(mean(AvgTemperature),2), 
+              .groups='keep') %>%
+    ungroup()
+  mnthly <- mnthly %>% mutate(Date = make_date(Year,Month)) %>%
+    select(Date,AvgTemp)
+  ts(mnthly$AvgTemp, frequency = 12, start=c(1995,1,1))
+}
+chi <- create.ts("Chicago")
+plot(chi, main="Monthly Average Temperature in Chicago")
+```
+
+## Train/Test
+
+- Train : 1995-01-01 - 2019-12-31
+- Test  : 2020-01-01 - 2020-05-13
+
+Create function that accepts a year to divide between train and test 
+
+```{r}
+train.test <- function(ts, year, split){
+  if(split == 'train'){
+    ts <- window(ts, end=c(year-1,12))
+  }
+  else{
+    ts <- window(ts, start=c(year,1))
+  }
+  print(autoplot(ts, main=split))
+  return(ts)
+}
+train <- train.test(chi, 2020, "train")
+test <- train.test(chi, 2020, "test")
+```
+
+## Decompose Time series to separate into consituent components
+
+Chicago temperature has both a trend and seasonal component 
+
+```{r}
+dc <- decompose(train)
+plot(dc)
+```
+
+## Histograms 
+
+```{r}
+par(mfrow=c(2,1))
+hist(train)
+hist(diff(train))
+```
+
+## Create daily, weekly, and monthly univariate time series
+
+```{r}
+#
+# daily average temperature
+#
+dfChi <- df %>% select(c("Date","Chicago")) %>% rename(AvgTemp = "Chicago")
+# create test/train splits
+dfTrain <- dfChi %>% dplyr::filter(Date <= "2019-12-31")
+dfTest <- dfChi %>% dplyr::filter(Date >= "2020-01-01")
+# create xts objects
+tsTrain <- xts(dfTrain[,!names(dfTrain) %in% c("Date")], order.by=dfTrain$Date)
+names(tsTrain) <- "AvgTemp"
+tsTest <- xts(dfTest[,!names(dfTest) %in% c("Date")], order.by=dfTest$Date)
+names(tsTest) <- "AvgTemp"
+#
+# weekly average temperature (week starting Monday)
+#
+dfW <- dfChi %>%
+  group_by(WeekStart = floor_date(df$Date, unit="week")) %>%
+  summarize(AvgTemp = mean(AvgTemp) %>% round(2))
+# create test/train splits
+dfWTrain <- dfW %>% dplyr::filter(WeekStart <= "2019-12-31")
+dfWTest <- dfW %>% dplyr::filter(WeekStart >= "2020-01-01")
+# create xts objects
+tsWTrain <- xts(dfWTrain[,!names(dfWTrain) %in% c("WeekStart")], order.by=dfWTrain$WeekStart)
+names(tsWTrain) <- "AvgTemp"
+tsWTest <- xts(dfWTest[,!names(dfWTest) %in% c("WeekStart")], order.by=dfWTest$WeekStart)
+names(tsWTest) <- "AvgTemp"
+#
+# monthly average temperature
+#
+dfM <- dfChi %>%
+  group_by(YearMonth = as.yearmon(Date)) %>% 
+  summarize(AvgTemp = mean(AvgTemp) %>% round(2))
+# create test/train splits
+dfMTrain <- dfM %>% dplyr::filter(YearMonth <= "2019-12-31")
+dfMTest <- dfM %>% dplyr::filter(YearMonth >= "2020-01-01")
+# create xts objects
+tsMTrain <- xts(dfMTrain[,!names(dfMTrain) %in% c("YearMonth")], order.by=dfMTrain$YearMonth)
+names(tsMTrain) <- "AvgTemp"
+tsMTest <- xts(dfMTest[,!names(dfMTest) %in% c("YearMonth")], order.by=dfMTest$YearMonth)
+names(tsMTest) <- "AvgTemp"
+```
+
+### Exploration of the Daily Avg Temp in Chicago
+
+```{r}
+summary(tsTrain)
+```
+
+```{r}
+# plot density
+plot(density(tsTrain$AvgTemp), 
+     main="Distribution of Daily Avg Temperature in Chicago")
+# plot time series
+autoplot(tsTrain$AvgTemp, main="Daily Avg Temperature in Chicago")
+```
+
+```{r}
+layout(matrix(c(1,2),1,2,byrow = TRUE))
+# acf
+forecast::Acf(tsTrain$AvgTemp, main="ACF", lag.max = 100)
+# pacf
+forecast::Pacf(tsTrain$AvgTemp, main="PACF", lag.max = 30)
+```
+
+The ACF has long memory.
+
+```{r}
+adf.test(tsTrain)
+kpss.test(tsTrain)
+```
+
+The ADF and KPSS tests indicate that the daily average temperature in Chicago is stationary.
+
+ADF >> reject null that time series is not stationary 
+KPSS >> p-value > 0.05 ~ cannot reject null that TS is stationary 
+
+```{r}
+# Periodogram 
+p.d <- periodogram(tsTrain,main="Periodogram of Daily Time Series")
+(maxFreq.d <- p.d$freq[which.max(p.d$spec)])
+(seasonality.d <- 1/maxFreq.d)
+```
+
+Check the second order of the time series.
+
+```{r}
+# plot time series
+autoplot(tsTrain$AvgTemp^2, 
+        main="Square of the Daily Avg Temperature in Chicago")
+# acf
+forecast::Acf(tsTrain$AvgTemp^2, main="ACF of ts^2", lag.max = 100)
+```
+
+KPSS Test on the Second Order (test for heteroskedasticity)
+
+```{r}
+kpss.test(tsTrain^2, null = "Level")
+kpss.test(tsTrain^2, null = "Trend")
+```
+
+We fail to reject the null hypothesis of the KPSS test and conclude that the 
+time series does not exhibit heteroskedasticity.
+
+
+### Exploration of the Weekly Avg Temp in Chicago
+
+```{r}
+summary(tsWTrain)
+```
+
+```{r}
+# plot density
+plot(density(tsWTrain$AvgTemp), 
+     main="Distribution of Weekly Avg Temperature in Chicago")
+# plot time series
+autoplot(tsWTrain$AvgTemp, main="Weekly Avg Temperature in Chicago")
+```
+
+```{r}
+layout(matrix(c(1,2),1,2,byrow = TRUE))
+# acf
+forecast::Acf(tsWTrain$AvgTemp, main="ACF", lag.max = 100)
+# pacf
+forecast::Pacf(tsWTrain$AvgTemp, main="PACF", lag.max = 30)
+```
+
+The ACF shows a repeating pattern.
+
+```{r}
+adf.test(tsWTrain)
+kpss.test(tsWTrain)
+```
+
+The ADF and KPSS tests indicate that the weekly average temperature in Chicago is stationary.
+
+ADF >> reject null that time series is not stationary 
+KPSS >> p-value > 0.05 ~ cannot reject null that TS is stationary 
+
+```{r}
+# Periodogram 
+p.w <- periodogram(tsWTrain,main="Periodogram of Weekly Time Series")
+(maxFreq.w <- p.w$freq[which.max(p.w$spec)])
+(seasonality.w <- 1/maxFreq.w)
+```
+
+Check the second order of the time series.
+
+```{r}
+# plot time series
+autoplot(tsWTrain$AvgTemp^2, 
+        main="Square of the Weekly Avg Temperature in Chicago")
+# acf
+forecast::Acf(tsWTrain$AvgTemp^2, main="ACF of ts^2", lag.max = 100)
+```
+
+ACF of the square of the time series shows a repeating pattern.
+
+KPSS Test on the Second Order (test for heteroskedasticity)
+
+```{r}
+kpss.test(tsWTrain^2, null = "Level")
+kpss.test(tsWTrain^2, null = "Trend")
+```
+
+We fail to reject the null hypothesis of the KPSS test and conclude that the 
+time series does not exhibit heteroskedasticity.
+
+### Exploration of the Monthly Avg Temp in Chicago
+
+```{r}
+summary(tsMTrain)
+```
+
+```{r}
+# plot density
+plot(density(tsMTrain$AvgTemp), 
+     main="Distribution of Monthly Avg Temperature in Chicago")
+# plot time series
+autoplot(tsMTrain$AvgTemp, main="Monthly Avg Temperature in Chicago")
+```
+
+```{r}
+layout(matrix(c(1,2),1,2,byrow = TRUE))
+# acf
+forecast::Acf(tsMTrain$AvgTemp, main="ACF", lag.max = 100)
+# pacf
+forecast::Pacf(tsMTrain$AvgTemp, main="PACF", lag.max = 30)
+```
+
+The ACF shows a repeating pattern.
+
+```{r}
+adf.test(tsMTrain)
+kpss.test(tsMTrain)
+```
+
+The ADF and KPSS tests indicate that the daily average temperature in Chicago is stationary.
+
+ADF >> reject null that time series is not stationary 
+KPSS >> p-value > 0.05 ~ cannot reject null that TS is stationary 
+
+```{r}
+# Periodogram 
+p.m <- periodogram(tsMTrain,main="Periodogram of Monthly Time Series")
+(maxFreq.m <- p.m$freq[which.max(p.m$spec)])
+(seasonality.m <- 1/maxFreq.m)
+```
+
+Check the second order of the time series.
+
+```{r}
+# plot time series
+autoplot(tsMTrain$AvgTemp^2, 
+        main="Square of the Monthly Avg Temperature in Chicago")
+# acf
+forecast::Acf(tsMTrain$AvgTemp^2, main="ACF of ts^2", lag.max = 100)
+```
+
+KPSS Test on the Second Order (test for heteroskedasticity)
+
+```{r}
+kpss.test(tsMTrain^2, null = "Level")
+kpss.test(tsMTrain^2, null = "Trend")
+```
+
+We fail to reject the null hypothesis of the KPSS test and conclude that the 
+time series does not exhibit heteroskedasticity.
+
+
+
+
+
+
+
+
+
